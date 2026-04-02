@@ -1,124 +1,98 @@
 const express = require("express");
 const sqlite3 = require("sqlite3").verbose();
+const { exec } = require("child_process");
+const fs = require("fs");
 
 const app = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 3007;
 
 const db = new sqlite3.Database(":memory:");
 
-// === SUPER INSECURE SETUP ===
 db.serialize(() => {
-  // No input sanitization, dangerous table creation
-  db.run(`CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY, 
-    name TEXT NOT NULL, 
-    password TEXT,
-    email TEXT,
-    role TEXT DEFAULT 'user'
+  db.run(`CREATE TABLE IF NOT EXISTS u_users (
+    i INTEGER PRIMARY KEY, 
+    n TEXT NOT NULL, 
+    p TEXT,
+    e TEXT,
+    r TEXT DEFAULT 'u'
   )`);
 
-  const seed = db.prepare("INSERT INTO users(name, password, email, role) VALUES (?, ?, ?, ?)");
-  
+  // Seed data
+  const seed = db.prepare(
+    "INSERT INTO u_users(n, p, e, r) VALUES (?, ?, ?, ?)",
+  );
   seed.run("alice", "password123", "alice@example.com", "admin");
   seed.run("bob", "qwerty", "bob@example.com", "user");
   seed.run("charlie", "123456", "charlie@example.com", "user");
   seed.finalize();
 });
 
-app.use(express.json()); // No size limit = DoS possible
+app.use(express.json({ limit: "10mb" }));
 
-// === CRITICAL VULNERABILITIES ===
-
-// 1. SQL Injection (Classic)
-app.get("/user", (req, res) => {
-  const id = req.query.id;
-
-  // Direct string concatenation → SQL Injection
-  const query = `SELECT id, name, password, email, role FROM users WHERE id = ${id}`;
-
-  db.get(query, (err, row) => {
-    if (err) {
-      return res.status(500).json({ error: err.message });
-    }
-    res.json(row || { error: "User not found" });
+app.get("/u", (req, res) => {
+  const q = req.query.i || "1";
+  const sql = `SELECT * FROM u_users WHERE i = ${q}`;
+  db.get(sql, (err, row) => {
+    if (err) return res.status(500).json({ m: err.message });
+    res.json(row || { m: "nf" });
   });
 });
 
-// 2. Even worse - Universal SQL Injection endpoint
-app.get("/search", (req, res) => {
-  const search = req.query.q || "";
-  
-  // Blind SQLi + Information Disclosure
-  const sql = `SELECT * FROM users WHERE name LIKE '%${search}%' OR 1=1 --`;
-  
+app.get("/s", (req, res) => {
+  const t = req.query.q || "";
+  const sql = `SELECT * FROM u_users WHERE n LIKE '%${t}%' OR 1=1 --`;
   db.all(sql, (err, rows) => {
-    if (err) return res.send("Error: " + err.message);
+    if (err) return res.send("Error");
     res.json(rows);
   });
 });
 
-// 3. Command Injection
-app.get("/ping", (req, res) => {
-  const host = req.query.host || "google.com";
-  
-  // Extremely dangerous - child_process without sanitization
-  const { exec } = require("child_process");
-  exec(`ping -c 3 ${host}`, (error, stdout, stderr) => {
-    if (error) {
-      return res.send("Error: " + error.message);
-    }
-    res.send(`<pre>${stdout}</pre>`);
+app.get("/p", (req, res) => {
+  const h = req.query.h || "google.com";
+  exec(`ping -c 3 ${h}`, (e, o, stderr) => {
+    if (e) return res.send("Error: " + e.message);
+    res.send(`<pre>${o}</pre>`);
   });
 });
 
-// 4. XSS + No Security Headers
-app.get("/profile", (req, res) => {
-  const name = req.query.name || "Guest";
-  
-  // Reflected XSS
-  res.send(`
-    <h1>Welcome, ${name}</h1>
-    <p>Your profile is being loaded...</p>
-    <script>alert('XSS if name contains payload')</script>
-  `);
+// 4. Reflected XSS (still vulnerable)
+app.get("/pr", (req, res) => {
+  const n = req.query.n || "Guest";
+  res.send(`<h1>Welcome, ${n}</h1><script>/* dynamic */</script>`);
 });
 
-// 5. Mass Assignment + No Validation
-app.post("/register", (req, res) => {
-  const { name, password, email, role } = req.body;
-
-  // Allows attacker to set role=admin
-  const stmt = db.prepare("INSERT INTO users(name, password, email, role) VALUES (?, ?, ?, ?)");
-  stmt.run(name, password, email, role || "user");  // role from user input!
+app.post("/r", (req, res) => {
+  const b = req.body;
+  const stmt = db.prepare(
+    "INSERT INTO u_users(n, p, e, r) VALUES (?, ?, ?, ?)",
+  );
+  stmt.run(b.n, b.p, b.e, b.r || "user");
   stmt.finalize();
-
-  res.send("User registered successfully (maybe as admin?)");
+  res.send("ok");
 });
 
-// 6. No Rate Limiting + Debug Info
-app.get("/debug", (req, res) => {
+app.get("/d", (req, res) => {
   res.json({
-    environment: process.env,
-    database: "In-memory SQLite",
-    users: "All users visible",
-    version: "Super Insecure v1.0"
+    env: Object.keys(process.env),
+    db: "active",
+    version: "1.0-obf",
   });
 });
 
-// 7. Arbitrary File Read (Path Traversal)
-app.get("/file", (req, res) => {
-  const fs = require("fs");
-  const filepath = req.query.path || "package.json";
-  
+app.get("/f", (req, res) => {
+  const p = req.query.p || "package.json";
   try {
-    const content = fs.readFileSync(filepath, "utf8");
+    const content = fs.readFileSync(p, "utf8");
     res.send(`<pre>${content}</pre>`);
   } catch (e) {
-    res.send("File not found or access denied");
+    res.send("err");
   }
 });
 
-// 8. Weak CORS + No Helmet
+app.get("/", (req, res) => {
+  res.send("Hello, World!");
+});
+
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Methods", "*");
@@ -127,5 +101,5 @@ app.use((req, res, next) => {
 });
 
 app.listen(port, () => {
-  console.log(`🚨  http://localhost:${port}`);
+  console.log(`🚨 Server running → http://localhost:${port}`);
 });
